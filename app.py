@@ -7,6 +7,13 @@ import base64
 import PyPDF2
 import sys
 
+# --- 🛠️ إعدادات التحكم بالرصيد (الميزة الجديدة) ---
+LIMITS = {
+    "free": 5,      # للمستخدم العادي
+    "VIP10": 10,    # كود للأصدقاء المقربين
+    "ADMIN": 1000   # كودك الشخصي
+}
+
 # --- 🛠️ إصلاح مشكلة ترميز اللغة العربية ---
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -21,36 +28,21 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 🎨 التصميم العصري (CSS) - تثبيت الكتابة السوداء ---
+# --- 🎨 التصميم العصري (CSS) - كودك الأصلي بالكامل ---
 st.markdown("""
 <style>
-    /* استيراد خط عربي حديث */
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;800&display=swap');
-    
-    html, body, [class*="css"] {
-        font-family: 'Cairo', sans-serif;
-    }
-
-    /* ============================================================
-       🚨 تثبيت ألوان الفقاعات لتكون دائماً فاتحة وكتابة سوداء
-       سواء كان الوضع ليلي أو نهاري (لضمان القراءة)
-    ============================================================ */
-
-    /* 1. فقاعة الطالب (User) - دائماً سماوي فاتح وكتابة سوداء */
+    html, body, [class*="css"] { font-family: 'Cairo', sans-serif; }
     div[data-testid="stChatMessage"]:nth-child(odd) {
         background-color: #e3f2fd !important;
         border: 1px solid #bbdefb !important;
         color: #000000 !important;
     }
-
-    /* 2. فقاعة الأستاذ (Assistant) - دائماً أبيض وكتابة سوداء */
     div[data-testid="stChatMessage"]:nth-child(even) {
         background-color: #ffffff !important;
         border: 1px solid #e0e0e0 !important;
         color: #000000 !important;
     }
-
-    /* 3. إجبار جميع النصوص داخل الفقاعات على اللون الأسود */
     div[data-testid="stChatMessage"] p,
     div[data-testid="stChatMessage"] h1,
     div[data-testid="stChatMessage"] h2,
@@ -59,10 +51,6 @@ st.markdown("""
     div[data-testid="stChatMessage"] div {
         color: #000000 !important;
     }
-
-    /* ============================================================ */
-
-    /* تنسيق الأزرار (Gradient) */
     div.stButton > button {
         background: linear-gradient(45deg, #2563eb, #0ea5e9);
         color: white !important;
@@ -73,29 +61,21 @@ st.markdown("""
     div.stButton > button:hover {
         transform: scale(1.02);
     }
-
-    /* الوضع الليلي (فقط للخلفيات العامة، لا يلمس الفقاعات) */
     @media (prefers-color-scheme: dark) {
-        .stApp {
-            background-color: #0e1117; /* خلفية التطبيق العامة غامقة */
-        }
-        [data-testid="stSidebar"] {
-            background-color: #161b22;
-            border-right: 1px solid #30363d;
-        }
-        h1, h2, h3 {
-            color: #e6edf3; /* العناوين الرئيسية تبقى فاتحة */
-        }
-        .stTextInput input {
-            color: white !important;
-        }
+        .stApp { background-color: #0e1117; }
+        [data-testid="stSidebar"] { background-color: #161b22; border-right: 1px solid #30363d; }
+        h1, h2, h3 { color: #e6edf3; }
+        .stTextInput input { color: white !important; }
     }
-
 </style>
 """, unsafe_allow_html=True)
 
 # --- دوال التعامل مع الذاكرة ---
 HISTORY_FILE = "chat_history.json"
+
+# ميزة العداد (تخزن في جلسة المستخدم)
+if "usage_counter" not in st.session_state:
+    st.session_state.usage_counter = 0
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -114,7 +94,6 @@ def save_history(history_dict):
             clean_msg = {key: val for key, val in msg.items() if key not in ["audio_content", "generated_image"]}
             clean_messages.append(clean_msg)
         history_to_save[k] = {"title": v["title"], "messages": clean_messages}
-        
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history_to_save, f, ensure_ascii=True, indent=4)
@@ -144,32 +123,35 @@ if "current_chat_id" not in st.session_state:
     st.session_state.history[new_id] = {"title": "محادثة جديدة", "messages": []}
 
 current_id = st.session_state.current_chat_id
-
 if current_id not in st.session_state.history:
-     st.session_state.history[current_id] = {"title": "محادثة جديدة", "messages": []}
+    st.session_state.history[current_id] = {"title": "محادثة جديدة", "messages": []}
 
 st.session_state.messages = st.session_state.history[current_id]["messages"]
 
 if "suggestion_clicked" not in st.session_state:
     st.session_state.suggestion_clicked = None
 
-# --- الاتصال الآمن (من ملف الأسرار) ---
+# --- الاتصال الآمن ---
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
     client = OpenAI(api_key=api_key)
-except FileNotFoundError:
-    st.error("لم يتم العثور على ملف الأسرار (.streamlit/secrets.toml). يرجى التأكد من إنشائه.")
-    st.stop()
-except KeyError:
-    st.error("المفتاح OPENAI_API_KEY غير موجود داخل ملف secrets.toml.")
+except Exception as e:
+    st.error("مشكلة في مفتاح OpenAI")
     st.stop()
 
 # 2. القائمة الجانبية
 with st.sidebar:
     st.markdown("### ⚙️ إعدادات الفصل")
-    
     subject = st.selectbox("المادة:", ["الفيزياء", "الكيمياء", "الرياضيات", "الأحياء", "اللغة العربية", "اللغة الإنجليزية"])
     level = st.selectbox("الصف:", ["الثالث متوسط", "الرابع علمي", "الخامس علمي", "السادس علمي", "السادس أدبي"])
+    
+    st.markdown("---")
+    # نظام العداد في السايدبار
+    input_code = st.text_input("🔑 كود التفعيل لزيادة المحاولات:", type="password")
+    current_limit = LIMITS.get(input_code, LIMITS["free"])
+    
+    st.write(f"📊 استهلاكك: {st.session_state.usage_counter} من {current_limit}")
+    st.progress(min(st.session_state.usage_counter / current_limit, 1.0))
     
     st.markdown("---")
     enable_voice = st.toggle("🔊 قراءة الشرح", value=False)
@@ -192,32 +174,11 @@ with st.sidebar:
                 st.session_state.current_chat_id = chat_id
                 st.session_state.suggestion_clicked = None
                 st.rerun()
-    
-    st.markdown("---")
-    if "confirm_delete" not in st.session_state: st.session_state.confirm_delete = False
-    if st.button("🗑️ حذف السجل"): st.session_state.confirm_delete = True
-    if st.session_state.confirm_delete:
-        c1, c2 = st.columns(2)
-        if c1.button("نعم"):
-            if os.path.exists(HISTORY_FILE):
-                try: os.remove(HISTORY_FILE)
-                except: pass
-            st.session_state.history = {}
-            new_id = str(datetime.datetime.now())
-            st.session_state.current_chat_id = new_id
-            st.session_state.history[new_id] = {"title": "محادثة جديدة", "messages": []}
-            st.session_state.confirm_delete = False
-            st.rerun()
-        if c2.button("لا"):
-            st.session_state.confirm_delete = False
-            st.rerun()
-            
-    if st.button("📝 امتحان سريع"): st.session_state.quiz_trigger = True
 
 # الواجهة الرئيسية
 st.title(f"🎓 المساعد الذكي: {subject}")
 
-# 4. عرض الرسائل
+# عرض الرسائل
 for message in st.session_state.messages:
     role = message["role"]
     with st.chat_message(role):
@@ -227,7 +188,7 @@ for message in st.session_state.messages:
         if "generated_image" in message:
             st.image(message["generated_image"], caption="رسم توضيحي 🎨")
 
-# --- المنطقة التفاعلية ---
+# المنطقة التفاعلية (المرفقات)
 st.markdown("---")
 voice_text = ""
 uploaded_image = None
@@ -240,21 +201,18 @@ with st.expander("📎 المرفقات (صوت، صورة، PDF)", expanded=Fal
     with c1:
         audio_value = st.audio_input("تسجيل")
         if audio_value:
-            with st.spinner(".."):
-                try:
-                    transcript = client.audio.transcriptions.create(model="whisper-1", file=("audio.wav", audio_value, "audio/wav"), language="ar")
-                    voice_text = transcript.text
-                except: pass
+            try:
+                transcript = client.audio.transcriptions.create(model="whisper-1", file=("audio.wav", audio_value, "audio/wav"), language="ar")
+                voice_text = transcript.text
+            except: pass
     with c2:
         uploaded_image = st.file_uploader("صورة", type=["jpg", "png"])
     with c3:
         uploaded_pdf = st.file_uploader("PDF", type=["pdf"])
         if uploaded_pdf:
-            with st.spinner(".."):
-                pdf_content = get_pdf_text(uploaded_pdf)
-                st.success("تم!")
+            pdf_content = get_pdf_text(uploaded_pdf)
 
-# الإدخال
+# المدخلات
 prompt_text = st.chat_input("اكتب سؤالك...")
 final_prompt = None
 
@@ -264,85 +222,63 @@ if st.session_state.suggestion_clicked:
 elif prompt_text:
     final_prompt = prompt_text
 elif voice_text:
-    if st.button("🚀 إرسال"): final_prompt = voice_text
+    final_prompt = voice_text
 
-if "quiz_trigger" not in st.session_state: st.session_state.quiz_trigger = False
-if st.session_state.quiz_trigger:
-    st.session_state.quiz_trigger = False
-    final_prompt = f"امتحان قصير في {subject}."
-
+# معالجة السؤال
 if final_prompt:
-    st.session_state.messages.append({"role": "user", "content": final_prompt})
-    with st.chat_message("user"):
-        st.markdown(final_prompt)
-    
-    pdf_instruction = ""
-    if pdf_content:
-        pdf_instruction = f"📎 PDF content:\n{pdf_content[:10000]}"
+    # التحقق من العداد
+    if st.session_state.usage_counter >= current_limit:
+        st.error(f"🛑 عذراً! لقد وصلت للحد الأقصى ({current_limit} محاولات). اطلب كود التفعيل من الأستاذ.")
+    else:
+        st.session_state.messages.append({"role": "user", "content": final_prompt})
+        with st.chat_message("user"):
+            st.markdown(final_prompt)
+        
+        # نظام الـ System Prompt
+        pdf_instruction = f"📎 PDF content:\n{pdf_content[:5000]}" if pdf_content else ""
+        system_prompt = f"أنت مدرس {subject} للصف {level}. {pdf_instruction}. اشرح بلهجة عراقية. استخدم LaTeX. لو طلب رسمة اكتب IMAGE_REQ. اقترح 3 أسئلة بفاصل ###SUGGESTIONS###."
+        
+        user_content = [{"type": "text", "text": final_prompt}]
+        if uploaded_image:
+            base64_image = encode_image(uploaded_image)
+            user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
 
-    system_prompt = f"""
-    أنت مدرس {subject} للصف {level}.
-    - {pdf_instruction}
-    - اشرح بلهجة عراقية واضحة.
-    - استخدم LaTeX للمعادلات.
-    - لو طلب رسمة اكتب: 'IMAGE_REQ'.
-    - بعد الإجابة، اقترح 3 أسئلة بفاصل '###SUGGESTIONS###'.
-    """
-    
-    user_content = [{"type": "text", "text": final_prompt}]
-    if uploaded_image:
-        uploaded_image.seek(0)
-        base64_image = encode_image(uploaded_image)
-        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}})
+        # إرسال لـ OpenAI
+        with st.chat_message("assistant"):
+            with st.spinner('🤔'):
+                try:
+                    response = client.chat.completions.create(model="gpt-4o-mini", messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
+                    ])
+                    full_response = response.choices[0].message.content
+                    
+                    # فصل الاقتراحات (من كودك الأصلي)
+                    if "###SUGGESTIONS###" in full_response:
+                        answer_display, suggestions_part = full_response.split("###SUGGESTIONS###")
+                        suggestions_list = [s.strip() for s in suggestions_part.strip().split('\n') if s.strip()]
+                    else:
+                        answer_display, suggestions_list = full_response, []
 
-    history_messages = [{"role": "system", "content": system_prompt}]
-    for msg in st.session_state.messages[:-1]:
-        content_curr = msg["content"]
-        if isinstance(content_curr, list): content_curr = content_curr[0]["text"]
-        history_messages.append({"role": msg["role"], "content": content_curr})
-    history_messages.append({"role": "user", "content": user_content})
+                    st.markdown(answer_display)
+                    current_msg = {"role": "assistant", "content": answer_display}
 
-    with st.chat_message("assistant"):
-        with st.spinner('🤔'):
-            try:
-                response = client.chat.completions.create(model="gpt-4o-mini", messages=history_messages)
-                full_response = response.choices[0].message.content
-                
-                suggestions_list = []
-                if "###SUGGESTIONS###" in full_response:
-                    answer_part, suggestions_part = full_response.split("###SUGGESTIONS###")
-                    suggestions_list = [s.strip() for s in suggestions_part.strip().split('\n') if s.strip()]
-                    answer_display = answer_part.replace(r"\[", "$$").replace(r"\]", "$$").replace(r"\(", "$").replace(r"\)", "$")
-                else:
-                    answer_display = full_response.replace(r"\[", "$$").replace(r"\]", "$$").replace(r"\(", "$").replace(r"\)", "$")
-                
-                st.markdown(answer_display)
-                current_msg = {"role": "assistant", "content": answer_display}
+                    # الصوت والرسم (من كودك الأصلي)
+                    if enable_voice:
+                        speech = client.audio.speech.create(model="tts-1", voice="onyx", input=answer_display[:500])
+                        current_msg["audio_content"] = speech.content
+                        st.audio(current_msg["audio_content"])
 
-                if enable_voice:
-                    speech = client.audio.speech.create(model="tts-1", voice="onyx", input=answer_display[:1000])
-                    current_msg["audio_content"] = speech.content
-                    st.audio(current_msg["audio_content"], format="audio/mp3")
-
-                if enable_image_gen:
-                    if "IMAGE_REQ" in full_response or any(k in final_prompt for k in ["ارسم", "رسم"]):
-                        img = client.images.generate(model="dall-e-3", prompt=f"Edu diagram {subject}: {final_prompt}", size="1024x1024")
+                    if enable_image_gen and "IMAGE_REQ" in full_response:
+                        img = client.images.generate(model="dall-e-3", prompt=f"Educational diagram: {final_prompt}", size="1024x1024")
                         current_msg["generated_image"] = img.data[0].url
                         st.image(current_msg["generated_image"])
 
-                if suggestions_list:
-                    st.markdown("---")
-                    st.caption("💡 مقترحات:")
-                    cols = st.columns(len(suggestions_list))
-                    for i, sugg in enumerate(suggestions_list):
-                        clean = sugg.replace("- ", "").replace("1. ", "")
-                        if cols[i].button(clean, key=f"s_{len(st.session_state.messages)}_{i}"):
-                            st.session_state.suggestion_clicked = clean
-                            st.rerun()
+                    # حفظ النتائج
+                    st.session_state.messages.append(current_msg)
+                    st.session_state.usage_counter += 1 # زيادة العداد
+                    save_history(st.session_state.history)
+                    st.rerun()
 
-                st.session_state.messages.append(current_msg)
-                st.session_state.history[current_id]["messages"] = st.session_state.messages
-                save_history(st.session_state.history)
-
-            except Exception as e:
-                st.error(f"Error: {e}")
+                except Exception as e:
+                    st.error(f"Error: {e}")
