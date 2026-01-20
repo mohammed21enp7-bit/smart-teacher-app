@@ -1,67 +1,143 @@
 import streamlit as st
 from openai import OpenAI
 import PyPDF2
+import base64
 
-# إعداد الصفحة
-st.set_page_config(page_title="المعلم الذكي", page_icon="🎓")
+# --- 1. إعدادات الصفحة والتصميم ---
+st.set_page_config(
+    page_title="المعلم الذكي",
+    page_icon="🎓",
+    layout="wide",  # جعل الصفحة عريضة
+    initial_sidebar_state="expanded" # القائمة الجانبية مفتوحة دائماً
+)
 
-# العنوان
-st.title("🎓 المعلم الذكي: مساعدك في حل المسائل")
+# --- 2. الشريط الجانبي (الإعدادات) ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/4712/4712009.png", width=100)
+    st.title("⚙️ إعدادات الدرس")
+    
+    # اختيار المرحلة
+    student_level = st.selectbox(
+        "اختر المرحلة الدراسية:",
+        ["السادس الإعدادي", "الخامس العلمي", "الأول الجامعي", "مرحلة أخرى"]
+    )
+    
+    # اختيار المادة
+    subject = st.selectbox(
+        "اختر المادة:",
+        ["الفيزياء ⚛️", "الرياضيات 📐", "الكيمياء 🧪", "علوم الحاسوب 💻"]
+    )
+    
+    st.markdown("---")
+    st.write("💡 **تلميح:** يمكنك رفع صورة للمسألة أو ملف PDF للمحاضرة.")
 
-# جلب المفتاح من أسرار Streamlit
-api_key = st.secrets["OPENAI_API_KEY"]
-client = OpenAI(api_key=api_key)
+# --- 3. المتن الرئيسي (العنوان) ---
+st.title(f"🎓 المعلم الذكي: {subject} ({student_level})")
+st.markdown("### 💬 اسألني وسأشرح لك باللهجة العراقية")
 
-# رفع الملف
-uploaded_file = st.file_uploader("قم برفع ملف المحاضرة (PDF)", type="pdf")
+# --- 4. الربط مع الذكاء الاصطناعي ---
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=api_key)
+except:
+    st.error("⚠️ لم يتم العثور على مفتاح API. يرجى إضافته في Secrets.")
+    st.stop()
 
-# متغير لتخزين نص الملف
+# --- 5. وظائف التعامل مع الملفات (صور و PDF) ---
+def encode_image(uploaded_file):
+    return base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+
+# مساحة رفع الملفات
+upload_col1, upload_col2 = st.columns([2, 1])
+
+with upload_col1:
+    upload_type = st.radio("نوع الملف:", ["📸 صورة (مسألة/رسم)", "📄 ملف PDF (نص)"], horizontal=True)
+
+image_base64 = None
 pdf_text = ""
+file_ready = False
 
-if uploaded_file is not None:
-    # قراءة ملف PDF
-    try:
-        pdf_reader = PyPDF2.PdfReader(uploaded_file)
-        for page in pdf_reader.pages:
-            pdf_text += page.extract_text()
-        st.success("تم قراءة الملف بنجاح! الآن يمكنك طرح أسئلتك.")
-    except Exception as e:
-        st.error(f"حدث خطأ أثناء قراءة الملف: {e}")
+with upload_col2:
+    if upload_type == "📸 صورة (مسألة/رسم)":
+        uploaded_file = st.file_uploader("ارفع الصورة هنا", type=["png", "jpg", "jpeg"])
+        if uploaded_file:
+            st.toast("تم رفع الصورة بنجاح!", icon="✅")
+            image_base64 = encode_image(uploaded_file)
+            with st.expander("عرض الصورة المرفقة"):
+                st.image(uploaded_file, use_container_width=True)
+            file_ready = True
+            
+    else:
+        uploaded_file = st.file_uploader("ارفع ملف PDF", type="pdf")
+        if uploaded_file:
+            try:
+                pdf_reader = PyPDF2.PdfReader(uploaded_file)
+                for page in pdf_reader.pages:
+                    extracted = page.extract_text()
+                    if extracted:
+                        pdf_text += extracted + "\n"
+                
+                if pdf_text.strip():
+                    st.toast("تم قراءة ملف PDF بنجاح!", icon="✅")
+                    file_ready = True
+                else:
+                    st.warning("⚠️ الملف عبارة عن صور (Scanned). يفضل استخدام خيار 'صورة'.")
+            except:
+                st.error("خطأ في الملف.")
 
-# صندوق المحادثة
+# --- 6. واجهة المحادثة (الشات) ---
 if "messages" not in st.session_state:
-    st.session_state["messages"] = [{"role": "system", "content": "أنت معلم ذكي ومساعد دراسي. ساعد الطالب في فهم وحل المسائل بناءً على المحتوى المقدم من الملف."}]
+    st.session_state.messages = []
 
-# عرض الرسائل السابقة
+# عرض الرسائل القديمة
 for msg in st.session_state.messages:
     if msg["role"] != "system":
-        st.chat_message(msg["role"]).write(msg["content"])
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
 
-# استقبال سؤال المستخدم
+# --- 7. استقبال السؤال والمعالجة ---
 if prompt := st.chat_input("اكتب سؤالك هنا..."):
-    # إضافة سؤال المستخدم للمحادثة
+    
+    # عرض سؤال المستخدم
     st.session_state.messages.append({"role": "user", "content": prompt})
-    st.chat_message("user").write(prompt)
+    with st.chat_message("user"):
+        st.write(prompt)
 
-    # تجهيز الرسالة الكاملة (السؤال + محتوى الملف)
-    full_prompt = prompt
-    if pdf_text:
-        full_prompt = f"بناءً على هذا النص من الملف المرفق:\n{pdf_text}\n\nالسؤال هو: {prompt}"
+    # تجهيز التوجيه للنظام (System Prompt)
+    system_instruction = f"""
+    أنت معلم خصوصي خبير لمادة {subject} للمرحلة {student_level}.
+    اشرح بوضوح وباللهجة العراقية الدارجة والمحببة.
+    استخدم أمثلة واقعية لتبسيط الفكرة.
+    """
 
-    # إرسال الطلب للذكاء الاصطناعي
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini", # أو gpt-3.5-turbo
-            messages=[
-                {"role": "system", "content": "أنت معلم خبير."},
-                {"role": "user", "content": full_prompt}
+    messages_payload = [{"role": "system", "content": system_instruction}]
+
+    # إضافة المحتوى المرفق (صورة أو نص)
+    if image_base64:
+        user_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
             ]
-        )
-        msg_content = response.choices[0].message.content
-        
-        # عرض الرد وحفظه
-        st.session_state.messages.append({"role": "assistant", "content": msg_content})
-        st.chat_message("assistant").write(msg_content)
-        
-    except Exception as e:
-        st.error(f"حدث خطأ: {e}")
+        }
+        messages_payload.append(user_msg)
+    elif pdf_text:
+        full_prompt = f"بناءً على هذا النص:\n{pdf_text}\n\nالسؤال: {prompt}"
+        messages_payload.append({"role": "user", "content": full_prompt})
+    else:
+        messages_payload.append({"role": "user", "content": prompt})
+
+    # الاتصال بـ OpenAI وعرض الرد
+    with st.chat_message("assistant"):
+        with st.spinner('جاري التفكير وحل المسألة... 🧠'):
+            try:
+                stream = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages_payload,
+                    stream=True
+                )
+                response = st.write_stream(stream)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"حدث خطأ: {e}")
