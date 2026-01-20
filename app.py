@@ -4,64 +4,86 @@ import PyPDF2
 
 # إعداد الصفحة
 st.set_page_config(page_title="المعلم الذكي", page_icon="🎓")
+st.title("🎓 المعلم الذكي: مساعدك الدراسي")
 
-# العنوان
-st.title("🎓 المعلم الذكي: مساعدك في حل المسائل")
+# جلب المفتاح
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=api_key)
+except:
+    st.error("لم يتم العثور على مفتاح API. تأكد من وضعه في Secrets.")
+    st.stop()
 
-# جلب المفتاح من أسرار Streamlit
-api_key = st.secrets["OPENAI_API_KEY"]
-client = OpenAI(api_key=api_key)
+# تهيئة الذاكرة لتخزين نص الملف
+if "pdf_content" not in st.session_state:
+    st.session_state.pdf_content = ""
 
 # رفع الملف
-uploaded_file = st.file_uploader("قم برفع ملف المحاضرة (PDF)", type="pdf")
-
-# متغير لتخزين نص الملف
-pdf_text = ""
+uploaded_file = st.file_uploader("ارفع ملف المحاضرة (PDF)", type="pdf")
 
 if uploaded_file is not None:
-    # قراءة ملف PDF
-    try:
-        pdf_reader = PyPDF2.PdfReader(uploaded_file)
-        for page in pdf_reader.pages:
-            pdf_text += page.extract_text()
-        st.success("تم قراءة الملف بنجاح! الآن يمكنك طرح أسئلتك.")
-    except Exception as e:
-        st.error(f"حدث خطأ أثناء قراءة الملف: {e}")
+    # قراءة الملف مرة واحدة وتخزينه
+    if st.session_state.pdf_content == "":
+        try:
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            text = ""
+            for page in pdf_reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text += extracted + "\n"
+            
+            st.session_state.pdf_content = text
+            
+            if text.strip():
+                st.success("✅ تم استخراج النص بنجاح!")
+            else:
+                st.warning("⚠️ الملف يبدو فارغاً أو عبارة عن صور (Scanned). الروبوت قد لا يستطيع قراءته.")
+                
+        except Exception as e:
+            st.error(f"حدث خطأ في القراءة: {e}")
 
-# صندوق المحادثة
+    # عرض ما يراه الروبوت (للتأكد)
+    with st.expander("👀 اضغط هنا لترَ ما قرأه الروبوت من الملف"):
+        st.text(st.session_state.pdf_content)
+
+# إدارة المحادثة
 if "messages" not in st.session_state:
-    st.session_state["messages"] = [{"role": "system", "content": "أنت معلم ذكي ومساعد دراسي. ساعد الطالب في فهم وحل المسائل بناءً على المحتوى المقدم من الملف."}]
+    st.session_state.messages = []
 
-# عرض الرسائل السابقة
 for msg in st.session_state.messages:
-    if msg["role"] != "system":
-        st.chat_message(msg["role"]).write(msg["content"])
+    st.chat_message(msg["role"]).write(msg["content"])
 
-# استقبال سؤال المستخدم
-if prompt := st.chat_input("اكتب سؤالك هنا..."):
-    # إضافة سؤال المستخدم للمحادثة
+# استقبال السؤال
+if prompt := st.chat_input("اسأل عن شيء في الملف..."):
+    # عرض سؤال المستخدم
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    # تجهيز الرسالة الكاملة (السؤال + محتوى الملف)
-    full_prompt = prompt
-    if pdf_text:
-        full_prompt = f"بناءً على هذا النص من الملف المرفق:\n{pdf_text}\n\nالسؤال هو: {prompt}"
+    # تجهيز الرسالة للذكاء
+    if st.session_state.pdf_content:
+        full_prompt = f"""
+        لديك هذا المحتوى من ملف دراسي:
+        {st.session_state.pdf_content}
+        
+        بناءً على المحتوى السابق، أجب على هذا السؤال باللهجة العراقية وشرح مبسط:
+        {prompt}
+        """
+    else:
+        # إذا لم يكن هناك نص مستخرج
+        full_prompt = prompt 
 
-    # إرسال الطلب للذكاء الاصطناعي
+    # الإرسال لـ OpenAI
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini", # أو gpt-3.5-turbo
+            model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "أنت معلم خبير."},
+                {"role": "system", "content": "أنت معلم فيزياء شاطر باللهجة العراقية."},
                 {"role": "user", "content": full_prompt}
             ]
         )
         msg_content = response.choices[0].message.content
-        
-        # عرض الرد وحفظه
         st.session_state.messages.append({"role": "assistant", "content": msg_content})
         st.chat_message("assistant").write(msg_content)
         
     except Exception as e:
-        st.error(f"حدث خطأ: {e}")
+        st.error(f"حدث خطأ في الاتصال: {e}")
