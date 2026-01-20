@@ -1,10 +1,11 @@
 import streamlit as st
 from openai import OpenAI
 import PyPDF2
+import base64
 
 # إعداد الصفحة
 st.set_page_config(page_title="المعلم الذكي", page_icon="🎓")
-st.title("🎓 المعلم الذكي: مساعدك الدراسي")
+st.title("🎓 المعلم الذكي: حل المسائل بالصور")
 
 # جلب المفتاح
 try:
@@ -14,76 +15,100 @@ except:
     st.error("لم يتم العثور على مفتاح API. تأكد من وضعه في Secrets.")
     st.stop()
 
-# تهيئة الذاكرة لتخزين نص الملف
-if "pdf_content" not in st.session_state:
-    st.session_state.pdf_content = ""
+# دالة لتحويل الصورة إلى نص يفهمه الذكاء (Base64)
+def encode_image(uploaded_file):
+    return base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
 
-# رفع الملف
-uploaded_file = st.file_uploader("ارفع ملف المحاضرة (PDF)", type="pdf")
+# اختيار نوع الملف (صورة أو PDF)
+upload_type = st.radio("ماذا تريد أن ترفع؟", ["صورة للمسألة (أفضل وأضمن)", "ملف PDF (للنصوص فقط)"])
 
-if uploaded_file is not None:
-    # قراءة الملف مرة واحدة وتخزينه
-    if st.session_state.pdf_content == "":
+uploaded_file = None
+image_base64 = None
+pdf_text = ""
+
+if upload_type == "صورة للمسألة (أفضل وأضمن)":
+    uploaded_file = st.file_uploader("التقط صورة للمسألة وارفعها هنا", type=["png", "jpg", "jpeg"])
+    if uploaded_file:
+        st.image(uploaded_file, caption="الصورة المرفقة", use_container_width=True)
+        # تحويل الصورة لتجهيزها للذكاء
+        image_base64 = encode_image(uploaded_file)
+
+else:
+    uploaded_file = st.file_uploader("ارفع ملف المحاضرة (PDF)", type="pdf")
+    if uploaded_file:
         try:
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
-            text = ""
             for page in pdf_reader.pages:
                 extracted = page.extract_text()
                 if extracted:
-                    text += extracted + "\n"
+                    pdf_text += extracted + "\n"
             
-            st.session_state.pdf_content = text
-            
-            if text.strip():
-                st.success("✅ تم استخراج النص بنجاح!")
+            if pdf_text.strip():
+                st.success("✅ تم استخراج النص من الملف.")
+                with st.expander("عرض النص المستخرج"):
+                    st.text(pdf_text)
             else:
-                st.warning("⚠️ الملف يبدو فارغاً أو عبارة عن صور (Scanned). الروبوت قد لا يستطيع قراءته.")
-                
+                st.warning("⚠️ الملف عبارة عن صور (Scanned). يفضل استخدام خيار 'صورة للمسألة' في الأعلى.")
         except Exception as e:
-            st.error(f"حدث خطأ في القراءة: {e}")
-
-    # عرض ما يراه الروبوت (للتأكد)
-    with st.expander("👀 اضغط هنا لترَ ما قرأه الروبوت من الملف"):
-        st.text(st.session_state.pdf_content)
+            st.error("حدث خطأ في قراءة الملف.")
 
 # إدارة المحادثة
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
-    st.chat_message(msg["role"]).write(msg["content"])
+    if msg["role"] != "system":
+        st.chat_message(msg["role"]).write(msg["content"])
 
 # استقبال السؤال
-if prompt := st.chat_input("اسأل عن شيء في الملف..."):
+if prompt := st.chat_input("اكتب سؤالك هنا (مثلاً: حل السؤال في الصورة)..."):
+    
     # عرض سؤال المستخدم
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    # تجهيز الرسالة للذكاء
-    if st.session_state.pdf_content:
-        full_prompt = f"""
-        لديك هذا المحتوى من ملف دراسي:
-        {st.session_state.pdf_content}
-        
-        بناءً على المحتوى السابق، أجب على هذا السؤال باللهجة العراقية وشرح مبسط:
-        {prompt}
-        """
+    # تجهيز الرسالة للذكاء الاصطناعي
+    messages_payload = [
+        {"role": "system", "content": "أنت معلم فيزياء خبير باللهجة العراقية. قم بتحليل المدخلات (سواء نص أو صورة) وقدم حلاً مفصلاً."}
+    ]
+
+    # حالة 1: المستخدم رفع صورة
+    if image_base64:
+        user_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    }
+                }
+            ]
+        }
+        messages_payload.append(user_msg)
+    
+    # حالة 2: المستخدم رفع PDF نصي
+    elif pdf_text:
+        full_prompt = f"بناءً على هذا النص:\n{pdf_text}\n\nالسؤال: {prompt}"
+        messages_payload.append({"role": "user", "content": full_prompt})
+    
+    # حالة 3: سؤال عام بدون ملفات
     else:
-        # إذا لم يكن هناك نص مستخرج
-        full_prompt = prompt 
+        messages_payload.append({"role": "user", "content": prompt})
 
     # الإرسال لـ OpenAI
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "أنت معلم فيزياء شاطر باللهجة العراقية."},
-                {"role": "user", "content": full_prompt}
-            ]
-        )
-        msg_content = response.choices[0].message.content
-        st.session_state.messages.append({"role": "assistant", "content": msg_content})
-        st.chat_message("assistant").write(msg_content)
-        
+        with st.spinner("جاري التفكير وحل المسألة..."):
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages_payload,
+                max_tokens=1000
+            )
+            msg_content = response.choices[0].message.content
+            
+            st.session_state.messages.append({"role": "assistant", "content": msg_content})
+            st.chat_message("assistant").write(msg_content)
+            
     except Exception as e:
-        st.error(f"حدث خطأ في الاتصال: {e}")
+        st.error(f"حدث خطأ: {e}")
